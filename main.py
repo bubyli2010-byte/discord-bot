@@ -35,4 +35,4 @@ discord.py==2.3.2
 
 Beispiel:
 ```
-!embed "Willkommen!" Dies ist ein Test Embed 🎉
+!embed "Willkommen!" Dies ist ein Test Embed 
