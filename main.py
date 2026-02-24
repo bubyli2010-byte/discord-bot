@@ -9,30 +9,13 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.command()
 async def embed(ctx, titel, *, beschreibung):
-    embed = discord.Embed(
+    em = discord.Embed(
         title=titel,
         description=beschreibung,
         color=discord.Color.blue()
     )
-    embed.set_footer(text=f"Erstellt von {ctx.author.name}")
+    em.set_footer(text=f"Erstellt von {ctx.author.name}")
     await ctx.message.delete()
-    await ctx.send(embed=embed)
+    await ctx.send(embed=em)
 
 bot.run(os.environ["TOKEN"])
-```
-
-**`requirements.txt`**
-```
-discord.py==2.3.2
-```
-
----
-
-**Benutzung auf Discord:**
-```
-!embed "Titel hier" Beschreibung hier
-```
-
-Beispiel:
-```
-!embed "Willkommen!" Dies ist ein Test Embed 
