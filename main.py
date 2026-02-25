@@ -1,12 +1,7 @@
 # main.py
 import discord
-from discord import app_commands
 from discord.ext import commands
-import os
-
-# ────────────────────────────────────────────────
-# KONFIGURATION
-# ────────────────────────────────────────────────
+import asyncio
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -14,103 +9,157 @@ intents.message_content = True
 bot = commands.Bot(
     command_prefix="!",
     intents=intents,
-    help_command=None
+    help_command=None,
+    case_insensitive=True
 )
 
-# Globale Variable (könnte später in DB / JSON gespeichert werden)
-RP_STATUS = {"open": False}  # Standard: geschlossen
+# Globale Variable für RP-Status (später persistent machen, z. B. JSON)
+RP_STATUS = {"open": False}
 
-# ─── Persistent View mit Select Menu ────────────────────────────────
-
-class RPStatusView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)  # persistent
-
-    @discord.ui.select(
-        custom_id="rp_status_select",
-        placeholder="RP Status ändern...",
-        min_values=1,
-        max_values=1,
-        options=[
-            discord.SelectOption(label="Geöffnet", value="open", emoji="✅"),
-            discord.SelectOption(label="Geschlossen", value="closed", emoji="❌"),
-        ]
-    )
-    async def status_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        new_value = select.values[0] == "open"
-        RP_STATUS["open"] = new_value
-
-        embed = discord.Embed(
-            title="RP-Status aktualisiert",
-            description=f"RP ist jetzt **{'geöffnet' if new_value else 'geschlossen'}**.",
-            color=discord.Color.green() if new_value else discord.Color.red(),
-            timestamp=discord.utils.utcnow()
-        )
-        embed.set_footer(text=f"Geändert von {interaction.user}")
-
-        await interaction.response.edit_message(embed=embed, view=self)
-
-
-# ─── Bot Events ─────────────────────────────────────────────────────
-
-@bot.event
-async def on_ready():
-    print(f"Eingeloggt als {bot.user}")
-    # Persistent View registrieren (wichtig für Select nach Restart)
-    bot.add_view(RPStatusView())
-
-
-# ─── Slash Commands ─────────────────────────────────────────────────
-
-@bot.tree.command(name="rpstatus", description="Zeigt den aktuellen RP-Status + Umschalt-Menü")
-@app_commands.default_permissions(manage_guild=True)  # nur Admins/Moderatoren
-async def rpstatus(interaction: discord.Interaction):
+# ─── Hilfsfunktion: Embed für Status ────────────────────────────────
+def status_embed():
+    color = discord.Color.green() if RP_STATUS["open"] else discord.Color.red()
+    desc = "Geöffnet – Code-Posten erlaubt" if RP_STATUS["open"] else "Geschlossen – warte auf Öffnung"
+    
     embed = discord.Embed(
         title="RP-Status",
-        description=f"**Aktueller Status:** {'Geöffnet' if RP_STATUS['open'] else 'Geschlossen'}",
-        color=discord.Color.green() if RP_STATUS['open'] else discord.Color.red(),
+        description=desc,
+        color=color,
         timestamp=discord.utils.utcnow()
     )
-    embed.set_footer(text="Ändere den Status mit dem Dropdown-Menü unten")
-
-    view = RPStatusView()
-    await interaction.response.send_message(embed=embed, view=view)
+    embed.set_footer(text="!rpstatus zum Umschalten | !rpcode zum Posten")
+    return embed
 
 
-@bot.tree.command(name="code", description="Code posten – nur wenn RP geöffnet ist")
-@app_commands.describe(
-    code="Dein RP-Code / Invite-Link / etc.",
-    ping="Wen soll der Bot pingen? (User / Rolle / everyone)"
-)
-async def post_code(interaction: discord.Interaction, code: str, ping: str = None):
+# ─── !rpstatus – Status anzeigen + Umschalten ──────────────────────
+@bot.command(name="rpstatus")
+@commands.has_permissions(manage_guild=True)  # nur Admins/Mods
+async def rpstatus_cmd(ctx):
+    embed = status_embed()
+    
+    view = discord.ui.View(timeout=60)
+    btn_open = discord.ui.Button(label="Geöffnet", style=discord.ButtonStyle.green, custom_id="open")
+    btn_closed = discord.ui.Button(label="Geschlossen", style=discord.ButtonStyle.red, custom_id="closed")
+    
+    async def button_callback(interaction: discord.Interaction):
+        if interaction.user != ctx.author:
+            await interaction.response.send_message("Nur der, der den Befehl ausgeführt hat, darf klicken.", ephemeral=True)
+            return
+            
+        RP_STATUS["open"] = (interaction.data["custom_id"] == "open")
+        
+        new_embed = status_embed()
+        await interaction.message.edit(embed=new_embed, view=None)
+        await interaction.response.send_message(f"RP-Status → **{'Geöffnet' if RP_STATUS['open'] else 'Geschlossen'}**", ephemeral=True)
+    
+    btn_open.callback = button_callback
+    btn_closed.callback = button_callback
+    
+    view.add_item(btn_open)
+    view.add_item(btn_closed)
+    
+    msg = await ctx.send(embed=embed, view=view)
+    
+    # Timeout-Handling
+    try:
+        await asyncio.sleep(60)
+        await msg.edit(view=None)
+    except:
+        pass
+
+
+# ─── !rpcode – Interaktives Formular zum Code-Posten ───────────────
+@bot.command(name="rpcode")
+async def rpcode_cmd(ctx):
     if not RP_STATUS["open"]:
         embed = discord.Embed(
-            title="RP ist geschlossen",
-            description="Momentan können keine Codes gepostet werden.\nWarte bis jemand den Status auf **Geöffnet** setzt.",
+            title="RP ist derzeit geschlossen",
+            description="Momentan können keine Codes gepostet werden.",
             color=discord.Color.red()
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await ctx.send(embed=embed, delete_after=12)
         return
 
-    # Embed für den Channel
+    # ── Formular starten ───────────────────────────────────────────
+    questions = [
+        ("**Code / Link / Invite** (z. B. abc-123-xyz oder https://...)", 120),
+        ("**Kurze Beschreibung** (was erwartet die Leute?)", 180),
+        ("**Wann startet es?** (Uhrzeit / Datum / bald / jetzt)", 90),
+        ("**Wer soll gepingt werden?** (@everyone, @Rolle, @User – oder leer lassen)", 60)
+    ]
+    
+    answers = []
+    cancel = False
+    
+    status_msg = await ctx.send(embed=discord.Embed(
+        description="**RP-Code Formular gestartet**\nAntworte einfach nacheinander im Chat.\nSchreibe `cancel` um abzubrechen.",
+        color=discord.Color.blue()
+    ))
+
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel
+
+    for i, (frage, timeout) in enumerate(questions, 1):
+        embed = discord.Embed(
+            title=f"Frage {i}/{len(questions)}",
+            description=frage,
+            color=discord.Color.blurple()
+        )
+        embed.set_footer(text=f"Antworte im Chat | max. {timeout} Sekunden | cancel = abbrechen")
+        
+        await status_msg.edit(embed=embed)
+
+        try:
+            msg = await bot.wait_for("message", check=check, timeout=timeout)
+            
+            if msg.content.lower() == "cancel":
+                cancel = True
+                break
+                
+            answers.append(msg.content.strip())
+            
+        except asyncio.TimeoutError:
+            await status_msg.edit(embed=discord.Embed(
+                description="Zeit abgelaufen – Formular abgebrochen.",
+                color=discord.Color.red()
+            ))
+            return
+
+    await status_msg.delete(delay=1)
+
+    if cancel:
+        await ctx.send("Formular abgebrochen.", delete_after=8)
+        return
+
+    if len(answers) < len(questions):
+        await ctx.send("Nicht alle Fragen beantwortet – abgebrochen.")
+        return
+
+    # ── Embed zusammenbauen ────────────────────────────────────────
+    code, beschreibung, zeit, ping = answers
+
     embed = discord.Embed(
-        title="Neuer RP-Code verfügbar!",
-        description=f"**Code:** ```{code}```",
-        color=discord.Color.blue(),
+        title="Neuer RP-Code / Event",
+        description=f"**Code / Link:**\n```\n{code}\n```",
+        color=discord.Color.green(),
         timestamp=discord.utils.utcnow()
     )
-    embed.set_footer(text=f"von {interaction.user}")
+    
+    embed.add_field(name="Beschreibung", value=beschreibung or "Keine Angabe", inline=False)
+    embed.add_field(name="Startzeit", value=zeit or "Nicht angegeben", inline=True)
+    embed.set_footer(text=f"von {ctx.author} | Status: Geöffnet")
 
-    content = ping if ping else None  # z. B. @everyone oder @Rolle oder @User
+    content = ping if ping and ping.strip() else None
 
-    await interaction.response.send_message(content=content, embed=embed)
+    await ctx.send(content=content, embed=embed)
 
 
-# ─── Bot starten ────────────────────────────────────────────────────
+# ─── Bot Start ──────────────────────────────────────────────────────
+@bot.event
+async def on_ready():
+    print(f"RP-Bot online → {bot.user}")
+    print("Prefix-Befehle: !rpstatus  |  !rpcode")
+
 
 if __name__ == "__main__":
-    TOKEN = os.getenv("DISCORD_TOKEN")
-    if not TOKEN:
-        TOKEN = "DEIN_TOKEN_HIER"  # ← für lokale Tests – bei Hosting besser .env / Railway Variable nutzen
-
-    bot.run(TOKEN)
+    bot.run("DEIN_TOKEN_HIER")   # oder os.getenv("DISCORD_TOKEN")
